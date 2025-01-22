@@ -72,6 +72,14 @@ func startJoystick() {
 		rightY.Store(val)
 	})
 
+	stick.On(joystick.L1Press, func(_ interface{}) {
+		drone.FrontFlip()
+	})
+
+	stick.On(joystick.R1Press, func(_ interface{}) {
+		drone.BackFlip()
+	})
+
 	go handleLeftJoystick()
 	go handleRightJoystick()
 }
