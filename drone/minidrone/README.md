@@ -98,6 +98,8 @@ Now it is time for free flight, controlled by you, the human pilot. Plug in the 
 * X           - Land
 * Left stick  - altitude
 * Right stick - direction
+* L1          - Front flip
+* R1          - Back flip
 
 
 IMPORTANT NOTE: you must press the "P3" button when your program first runs for the "clone" DS3 joysticks we are using to fully turn on.
