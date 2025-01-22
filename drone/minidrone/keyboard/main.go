@@ -3,103 +3,157 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	gobot "gobot.io/x/gobot/v2"
-	"gobot.io/x/gobot/v2/platforms/ble"
-	"gobot.io/x/gobot/v2/platforms/parrot/minidrone"
-
+	minidrone "github.com/hybridgroup/tinygo-minidrone"
 	term "github.com/nsf/termbox-go"
+	"tinygo.org/x/bluetooth"
+)
+
+var deviceAddress = connectAddress()
+
+var (
+	adapter = bluetooth.DefaultAdapter
+	device  bluetooth.Device
+	ch      = make(chan bluetooth.ScanResult, 1)
+	drone   *minidrone.Minidrone
 )
 
 func main() {
-	bleAdaptor := ble.NewClientAdaptor(os.Args[1])
-	bleAdaptor.Connect()
+	defer cleanup()
 
-	drone := minidrone.NewDriver(bleAdaptor)
-	drone.Start()
+	fmt.Println("Enabling Bluetooth...")
+	must("enable BLE interface", adapter.Enable())
 
-	err := term.Init()
-	if err != nil {
-		panic(err)
+	fmt.Println("Starting scan...")
+	must("start scan", adapter.Scan(scanHandler))
+
+	select {
+	case result := <-ch:
+		var err error
+		device, err = adapter.Connect(result.Address, bluetooth.ConnectionParams{})
+		must("connect to device", err)
+		fmt.Printf("Connected to %s\n", result.Address.String())
+	case <-time.After(30 * time.Second):
+		fmt.Println("Scan timeout. No matching device found.")
+		return
 	}
 
-	work := func() {
-		defer term.Close()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived interrupt signal. Exiting...")
+		// Perform any necessary cleanup here
+		os.Exit(0)
+	}()
 
-		for {
-			switch ev := term.PollEvent(); ev.Type {
-			case term.EventKey:
-				switch ev.Key {
-				case term.KeyEsc:
-					term.Sync()
-					fmt.Println("exiting...")
-					return
-				default:
-					term.Sync()
-					// WSAD to control forward, backward, left, and right
-					switch ev.Ch {
-					case '[':
-						fmt.Println("takeoff...")
-						drone.TakeOff()
-					case ']':
-						fmt.Println("land...")
-						drone.Land()
-					case 'w':
-						fmt.Println("forward...")
-						drone.Forward(20)
-					case 's':
-						fmt.Println("backward...")
-						drone.Backward(20)
-					case 'a':
-						fmt.Println("left...")
-						drone.Left(20)
-					case 'd':
-						fmt.Println("right...")
-						drone.Right(20)
-					// IKJL to control up, down, spin counter clockwise, spin clockwise
-					case 'i':
-						fmt.Println("up...")
-						drone.Up(20)
-					case 'k':
-						fmt.Println("down...")
-						drone.Down(20)
-					case 'j':
-						fmt.Println("spin counter clockwise...")
-						drone.CounterClockwise(minidrone.ValidatePitch(20, 10))
-					case 'l':
-						fmt.Println("spin clockwise...")
-						drone.Clockwise(minidrone.ValidatePitch(20, 10))
-					// TGFH to flip front, flip back, flip left, flip right
-					case 't':
-						fmt.Println("front flip...")
-						drone.FrontFlip()
-					case 'g':
-						fmt.Println("back flip...")
-						drone.BackFlip()
-					case 'f':
-						fmt.Println("left flip...")
-						drone.LeftFlip()
-					case 'h':
-						fmt.Println("right flip...")
-						drone.RightFlip()
-					default:
-						drone.Stop()
-					}
-				}
-			case term.EventError:
-				panic(ev.Err)
-			}
+	drone = minidrone.NewMinidrone(&device)
+	must("start drone", drone.Start())
 
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
+	fmt.Println("Initializing terminal...")
+	must("initialize terminal", term.Init())
 
-	robot := gobot.NewRobot("minidrone",
-		[]gobot.Connection{bleAdaptor},
-		[]gobot.Device{drone},
-		work,
-	)
+	go handleSignals()
 
-	robot.Start()
+	fmt.Println("Taking off in 3 seconds...")
+	time.Sleep(3 * time.Second)
+	drone.TakeOff()
+
+	controlDrone()
 }
+
+func controlDrone() {
+	for {
+		switch ev := term.PollEvent(); ev.Type {
+		case term.EventKey:
+			switch ev.Key {
+			case term.KeyEsc:
+				fmt.Println("Exiting...")
+				return
+			default:
+				handleDroneCommand(ev.Ch)
+			}
+		case term.EventError:
+			fmt.Printf("Terminal error: %v\n", ev.Err)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func handleDroneCommand(ch rune) {
+	commands := map[rune]func(){
+		'[': func() { fmt.Println("Takeoff..."); drone.TakeOff() },
+		']': func() { fmt.Println("Land..."); drone.Land() },
+		'w': func() { fmt.Println("Forward..."); drone.Forward(1) },
+		's': func() { fmt.Println("Backward..."); drone.Backward(1) },
+		'a': func() { fmt.Println("Left..."); drone.Left(1) },
+		'd': func() { fmt.Println("Right..."); drone.Right(1) },
+		'k': func() { fmt.Println("Down..."); drone.Down(1) },
+		'i': func() { fmt.Println("Up..."); drone.Up(1) },
+		'j': func() {
+			fmt.Println("Spin counter clockwise...")
+			drone.CounterClockwise(minidrone.ValidatePitch(20, 10))
+		},
+		'l': func() { fmt.Println("Spin clockwise..."); drone.Clockwise(minidrone.ValidatePitch(20, 10)) },
+		't': func() { fmt.Println("Front flip..."); drone.FrontFlip() },
+		'g': func() { fmt.Println("Back flip..."); drone.BackFlip() },
+		'f': func() { fmt.Println("Left flip..."); drone.LeftFlip() },
+		'h': func() { fmt.Println("Right flip..."); drone.RightFlip() },
+	}
+
+	if cmd, ok := commands[ch]; ok {
+		cmd()
+	} else {
+		drone.Halt()
+	}
+}
+
+func cleanup() {
+	fmt.Println("Cleaning up...")
+	if drone != nil {
+		drone.Land()
+		time.Sleep(2 * time.Second)
+		drone.Halt()
+	}
+
+	device.Disconnect()
+
+	if adapter != nil {
+		adapter.StopScan()
+	}
+	term.Close()
+}
+
+func handleSignals() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	<-c
+	fmt.Println("\nReceived termination signal")
+	cleanup()
+	os.Exit(0)
+}
+
+func scanHandler(a *bluetooth.Adapter, d bluetooth.ScanResult) {
+	fmt.Printf("Device: %s, RSSI: %d, Name: %s\n", d.Address.String(), d.RSSI, d.LocalName())
+	if d.Address.String() == deviceAddress {
+		a.StopScan()
+		ch <- d
+	}
+}
+
+func must(action string, err error) {
+	if err != nil {
+		fmt.Printf("Failed to %s: %v\n", action, err)
+		os.Exit(1)
+	}
+}
+
+func connectAddress() string {
+	if len(os.Args) < 2 {
+		println("you must pass the Bluetooth address of the minidrone y0u want to connect to as the first argument")
+		os.Exit(1)
+	}
