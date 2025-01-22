@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"image/color"
 	"machine"
 	"math/rand"
@@ -47,6 +48,8 @@ var (
 
 	// IP address of the MQTT broker to use. Replace with your own info, if so desired.
 	broker string = "tcp://test.mosquitto.org:1883"
+
+	mqttConnected bool
 )
 
 func main() {
@@ -130,11 +133,28 @@ func handleDisplay() {
 
 	black := color.RGBA{1, 1, 1, 255}
 
+	showingDial := true
+	currentCount := 0
+	maxCount := 10 // refresh msg every 2s
+
+	msg := ""
 	for {
 		display.ClearBuffer()
 
-		val := strconv.Itoa(int(dialValue))
-		msg := "dial: " + val
+		if currentCount == maxCount {
+			showingDial = !showingDial
+			if !showingDial {
+				msg = fmt.Sprintf("MQTT: %t", mqttConnected)
+			}
+			currentCount = 0
+		}
+
+		// separate from condition above to update dialValue
+		if showingDial {
+			val := strconv.Itoa(int(dialValue))
+			msg = "dial: " + val
+		}
+
 		tinyfont.WriteLine(&display, &freemono.Bold9pt7b, 10, 20, msg, black)
 
 		var radius int16 = 4
@@ -152,6 +172,7 @@ func handleDisplay() {
 		display.Display()
 
 		time.Sleep(200 * time.Millisecond)
+		currentCount++
 	}
 }
 
@@ -167,6 +188,8 @@ func connectToMQTT() {
 	token := mqttClient.Connect()
 	if token.Wait() && token.Error() != nil {
 		failMessage(token.Error().Error())
+	} else {
+		mqttConnected = true
 	}
 }
 
@@ -185,6 +208,9 @@ func publishToMQTT() {
 		token.Wait()
 		if token.Error() != nil {
 			println(token.Error().Error())
+			mqttConnected = false
+		} else {
+			mqttConnected = true
 		}
 		time.Sleep(time.Second)
 	}
