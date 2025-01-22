@@ -6,7 +6,7 @@ First use git to clone this repo to your local machine:
 
 ```
 git clone https://github.com/hybridgroup/gopherconsg-2025.git
-cd gopherconau-2025
+cd gopherconsg-2025
 ```
 
 ## Install Go 1.23
